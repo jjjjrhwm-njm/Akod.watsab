@@ -1,7 +1,6 @@
 {
-  "name": "njm-whatsapp-pro",
-  "version": "1.2.0",
-  "description": "WhatsApp System by Njm Al-Ebda3",
+  "name": "njm-wa-final",
+  "version": "2.0.0",
   "main": "index.js",
   "scripts": { "start": "node index.js" },
   "dependencies": {
