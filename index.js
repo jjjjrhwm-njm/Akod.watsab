@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require("baileys");
 const admin = require("firebase-admin");
 const express = require("express");
 const { Telegraf } = require("telegraf");
@@ -17,34 +17,35 @@ if (!admin.apps.length) {
     admin.initializeApp({ credential: admin.credential.cert(JSON.parse(firebaseConfig)) });
 }
 const db = admin.firestore();
+// إصلاح الانهيار: تجاهل القيم الفارغة التي يرسلها الوتساب وتسبب توقف السيرفر
+db.settings({ ignoreUndefinedProperties: true }); 
 
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const ADMIN_ID = "7650083401"; 
 
 let sock;
 let qrCodeData = ""; 
-let pairingCode = ""; // ميزة الربط الجديدة
+let pairingCode = ""; 
 
-// --- [ 2. ميزة النبض: لمنع السيرفر من النوم ] ---
+// --- [ 2. ميزة النبض: منع السيرفر من النوم (كل 5 دقائق) ] ---
 setInterval(() => {
     const host = process.env.RENDER_EXTERNAL_HOSTNAME;
     if (host) {
-        https.get(`https://${host}/ping`, (res) => {
-            console.log(`💓 نبض النظام مستقر: ${res.statusCode}`);
-        }).on('error', () => {});
+        https.get(`https://${host}/ping`, (res) => {}).on('error', () => {});
     }
-}, 3 * 60 * 1000); 
+}, 5 * 60 * 1000);
 
-// --- [ 3. محرك الوتساب مع الربط بالكود ] ---
+// --- [ 3. محرك الوتساب مع الربط بالكود وحفظ الجلسة ] ---
 async function startNjmSystem() {
     const folder = './auth_info_njm';
     if (!fs.existsSync(folder)) fs.mkdirSync(folder);
 
-    // استعادة الجلسة من Firebase
+    // استعادة الجلسة من Firebase (لكي لا تصور الكود مرتين للأبد)
     try {
         const sessionSnap = await db.collection('session').doc('njm_wa').get();
         if (sessionSnap.exists) {
             fs.writeFileSync(`${folder}/creds.json`, JSON.stringify(sessionSnap.data()));
+            console.log("📂 تم استعادة الجلسة سحابياً.");
         }
     } catch (e) {}
 
@@ -55,24 +56,22 @@ async function startNjmSystem() {
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        // تغيير الهوية لهوية متصفح رسمية ومستقرة جداً
-        browser: ["Chrome (Linux)", "Desktop", "121.0.0"],
-        connectTimeoutMs: 100000, // زيادة وقت الانتظار جداً
-        defaultQueryTimeoutMs: 0
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
+        connectTimeoutMs: 120000 // زيادة وقت الانتظار لضمان نجاح الربط
     });
 
-    // ميزة الربط برقم الهاتف (إذا لم تكن مسجلاً)
+    // ميزة الربط برقم الهاتف (بديل الكاميرا)
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
-            // سنستخدم رقم الإدمن للربط (تأكد أن الرقم مكتوب بصيغة 966...)
+            // الرقم الذي سيقوم بالربط (رقمك الإدمن)
             let code = await sock.requestPairingCode("966554526287"); 
             pairingCode = code?.match(/.{1,4}/g)?.join("-") || code;
-            console.log(`🔑 كود الربط الخاص بك هو: ${pairingCode}`);
-        }, 5000);
+        }, 8000);
     }
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
+        // حفظ فوري في Firebase للأمان
         await db.collection('session').doc('njm_wa').set(state.creds, { merge: true });
     });
 
@@ -82,25 +81,26 @@ async function startNjmSystem() {
         if (connection === 'open') {
             qrCodeData = "CONNECTED";
             pairingCode = "DONE";
-            bot.telegram.sendMessage(ADMIN_ID, "🌟 *نجم الإبداع متصل الآن!*").catch(() => {});
+            bot.telegram.sendMessage(ADMIN_ID, "🌟 *نجم الإبداع متصل الآن بالوتساب!*").catch(() => {});
         }
         if (connection === 'close') {
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason !== DisconnectReason.loggedOut) setTimeout(() => startNjmSystem(), 5000);
+            else qrCodeData = "";
         }
     });
 }
 
-// --- [ 4. بوابة الحماية والمزامنة ] ---
+// --- [ 4. بوابة الحماية والمزامنة مع التطبيق ] ---
 
 app.get("/request-otp", async (req, res) => {
     const { phone, name, app: appName, deviceId } = req.query;
     const otp = Math.floor(100000 + Math.random() * 899999).toString();
     try {
-        await db.collection('otps').doc(phone).set({ code: otp, appName, name, deviceId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+        await db.collection('otps').doc(phone).set({ code: otp, appName, name, deviceId });
         if (sock && qrCodeData === "CONNECTED") {
             const jid = phone.replace(/\D/g, '') + "@s.whatsapp.net";
-            await sock.sendMessage(jid, { text: `🔒 *كود التحقق*\nتطبيق: ${appName}\nكودك: *${otp}*` });
+            await sock.sendMessage(jid, { text: `🔒 *كود التحقق*\nتطبيق: ${appName}\nكودك هو: *${otp}*` });
             res.status(200).send("SUCCESS");
         } else res.status(200).send("OFFLINE");
     } catch (e) { res.status(200).send("SUCCESS"); }
@@ -112,7 +112,10 @@ app.get("/verify-otp", async (req, res) => {
         const otpDoc = await db.collection('otps').doc(phone).get();
         if (otpDoc.exists && otpDoc.data().code === code) {
             const data = otpDoc.data();
-            await db.collection('users').doc(`${phone}_${data.appName}`).set({ phone, name: data.name, deviceId: data.deviceId, appName: data.appName, verified: true }, { merge: true });
+            await db.collection('users').doc(`${phone}_${data.appName}`).set({
+                phone, name: data.name, deviceId: data.deviceId, appName: data.appName, verified: true 
+            }, { merge: true });
+            bot.telegram.sendMessage(ADMIN_ID, `🎯 *صيد جديد!*\n📱: ${data.appName}\n👤: ${data.name}\n📞: ${phone}`);
             res.status(200).send("VERIFIED");
         } else res.status(401).send("INVALID");
     } catch (e) { res.status(401).send("ERROR"); }
@@ -125,13 +128,13 @@ app.get("/check-device", async (req, res) => {
     res.status(!snap.empty ? 200 : 401).send(!snap.empty ? "ALLOWED" : "UNAUTHORIZED");
 });
 
-// واجهة عرض الكود QR والربط الرقمي
+// عرض الواجهة (QR أو كود الربط)
 app.get("/", async (req, res) => {
     if (pairingCode === "DONE") return res.send("<h1 style='color:green;text-align:center;'>✅ النظام متصل!</h1>");
     if (pairingCode) return res.send(`
-        <div style='text-align:center; margin-top:50px;'>
+        <div style='text-align:center; margin-top:50px; font-family: sans-serif;'>
             <h1>🔑 كود الربط الرقمي</h1>
-            <div style='font-size: 50px; font-weight: bold; color: #25D366; letter-spacing: 5px;'>${pairingCode}</div>
+            <div style='font-size: 60px; font-weight: bold; color: #25D366;'>${pairingCode}</div>
             <p>1. افتح الوتساب > الأجهزة المرتبطة > ربط جهاز.</p>
             <p>2. اختر "الربط برقم الهاتف بدلاً من ذلك".</p>
             <p>3. أدخل الكود الظاهر أعلاه.</p>
