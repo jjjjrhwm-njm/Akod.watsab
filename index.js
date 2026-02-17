@@ -11,32 +11,31 @@ const fs = require("fs");
 const app = express();
 app.use(express.json());
 
-// 1. إعداد Firebase
+// 1. إعداد Firebase (الخزانة tsgil-wts)
 const firebaseConfig = process.env.FIREBASE_CONFIG;
 if (!admin.apps.length) {
     admin.initializeApp({ credential: admin.credential.cert(JSON.parse(firebaseConfig)) });
 }
 const db = admin.firestore();
 
-// 2. إعداد التليجرام مع حماية من الانهيار (Crash Protection)
+// 2. إعداد التليجرام مع حماية من الانهيار
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const ADMIN_ID = "7650083401"; 
 
 let sock;
 let qrCodeData = ""; 
-const userState = new Map();
 
-// --- [ 3. ميزة النبض: منع السيرفر من النوم ] ---
+// --- [ 3. ميزة النبض الفائق: منع السيرفر من النوم نهائياً ] ---
 setInterval(() => {
     const host = process.env.RENDER_EXTERNAL_HOSTNAME;
     if (host) {
         https.get(`https://${host}/ping`, (res) => {
-            console.log(`💓 نبض النظام: مستقر ${res.statusCode}`);
-        }).on('error', (err) => console.log("💓 فشل النبض المؤقت"));
+            console.log(`💓 نبض النظام مستقر: ${res.statusCode}`);
+        }).on('error', () => console.log("⚠️ نبض مؤقت"));
     }
-}, 5 * 60 * 1000); // كل 5 دقائق لضمان النشاط التام
+}, 3 * 60 * 1000); // كل 3 دقائق لضمان النشاط التام
 
-// --- [ 4. محرك الوتساب المطور ] ---
+// --- [ 4. محرك الوتساب مع إصلاح "تعذر الربط" ] ---
 async function startNjmSystem() {
     const folder = './auth_info_njm';
     if (!fs.existsSync(folder)) fs.mkdirSync(folder);
@@ -48,7 +47,7 @@ async function startNjmSystem() {
             fs.writeFileSync(`${folder}/creds.json`, JSON.stringify(sessionSnap.data()));
             console.log("📂 تم استعادة الجلسة من السحاب.");
         }
-    } catch (e) { console.log("⚠️ فشل استعادة الجلسة"); }
+    } catch (e) { console.log("⚠️ لا توجد جلسة سحابية سابقة."); }
 
     const { state, saveCreds } = await useMultiFileAuthState(folder);
     const { version } = await fetchLatestBaileysVersion();
@@ -57,13 +56,16 @@ async function startNjmSystem() {
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        // تغيير الهوية لهوية "لينكس" لزيادة استقرار الربط وتقليل "تعذر الربط"
-        browser: ["Ubuntu", "Chrome", "20.0.04"]
+        // تغيير الهوية لهوية متصفح ثابتة جداً لتقليل "تعذر الربط"
+        browser: ["Ubuntu", "Chrome", "110.0.5481.177"],
+        connectTimeoutMs: 60000, // زيادة وقت الانتظار للاتصال
+        defaultQueryTimeoutMs: 0,
+        keepAliveIntervalMs: 10000
     });
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        // حفظ فوري في Firebase لضمان عدم ضياع الربط
+        // حفظ فوري في Firebase لضمان عدم ضياع الربط حتى لو انطفا السيرفر
         await db.collection('session').doc('njm_wa').set(state.creds, { merge: true });
     });
 
@@ -76,27 +78,27 @@ async function startNjmSystem() {
         if (connection === 'open') {
             qrCodeData = "CONNECTED";
             console.log("✅ الوتساب متصل!");
-            bot.telegram.sendMessage(ADMIN_ID, "🌟 *نجم الإبداع متصل الآن بالوتساب!*").catch(e => {});
+            bot.telegram.sendMessage(ADMIN_ID, "🌟 *نظام الوتساب متصل وجاهز للعمل!*").catch(() => {});
         }
         if (connection === 'close') {
-            qrCodeData = "";
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason !== DisconnectReason.loggedOut) {
                 console.log("🔄 إعادة الاتصال تلقائياً...");
                 setTimeout(() => startNjmSystem(), 5000);
+            } else {
+                qrCodeData = ""; // تصفير الكود في حال سجلت الخروج
             }
         }
     });
 }
 
-// --- [ 5. بوابة الحماية والمزامنة الذكية ] ---
+// --- [ 5. مسارات الربط مع التطبيقات ] ---
 
 app.get("/request-otp", async (req, res) => {
     const { phone, name, app: appName, deviceId } = req.query;
     const otp = Math.floor(100000 + Math.random() * 899999).toString();
 
     try {
-        // لا نحفظ المستخدم في users إلا بعد التأكد من الكود
         await db.collection('otps').doc(phone).set({ 
             code: otp, appName, name, deviceId, createdAt: admin.firestore.FieldValue.serverTimestamp() 
         });
@@ -117,12 +119,11 @@ app.get("/verify-otp", async (req, res) => {
         const otpDoc = await db.collection('otps').doc(phone).get();
         if (otpDoc.exists && otpDoc.data().code === code) {
             const data = otpDoc.data();
-            // الآن يتم الحفظ النهائي لكل تطبيق على حدة
             await db.collection('users').doc(`${phone}_${data.appName}`).set({
                 phone, name: data.name, deviceId: data.deviceId, appName: data.appName, verified: true 
             }, { merge: true });
             
-            bot.telegram.sendMessage(ADMIN_ID, `🎯 *صيد جديد موثق!*\n📱: ${data.appName}\n👤: ${data.name}\n📞: ${phone}`).catch(e => {});
+            bot.telegram.sendMessage(ADMIN_ID, `🎯 *صيد جديد موثق!*\n📱: ${data.appName}\n👤: ${data.name}\n📞: ${phone}`).catch(() => {});
             res.status(200).send("VERIFIED");
         } else {
             res.status(401).send("INVALID");
@@ -139,7 +140,7 @@ app.get("/check-device", async (req, res) => {
     } catch (e) { res.status(401).send("ERROR"); }
 });
 
-// عرض الكود QR في المتصفح
+// عرض الكود QR في المتصفح بشكل مباشر
 app.get("/", async (req, res) => {
     if (qrCodeData === "CONNECTED") return res.send("<h1 style='color:green;text-align:center;'>✅ النظام متصل وشغال!</h1>");
     if (!qrCodeData) return res.send("<h1 style='text-align:center;'>⏳ جاري توليد الكود... حدث الصفحة</h1>");
@@ -149,7 +150,6 @@ app.get("/", async (req, res) => {
 
 app.get("/ping", (req, res) => res.send("💓"));
 
-// تشغيل البوت مع حماية من أخطاء الاتصال
-bot.launch().catch(err => console.log("⚠️ تليجرام غير متاح حالياً، السيرفر سيستمر بالعمل."));
+bot.launch().catch(() => console.log("⚠️ تليجرام معلق مؤقتاً"));
 
 app.listen(process.env.PORT || 10000, () => startNjmSystem());
