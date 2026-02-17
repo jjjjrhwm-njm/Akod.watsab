@@ -1,6 +1,6 @@
 {
-  "name": "njm-pro-system",
-  "version": "1.0.0",
+  "name": "akod-watsab-pro",
+  "version": "1.1.0",
   "main": "index.js",
   "scripts": { "start": "node index.js" },
   "dependencies": {
@@ -8,10 +8,9 @@
     "axios": "^1.6.2",
     "firebase-admin": "^11.11.0",
     "telegraf": "^4.15.3",
-    "@whiskeysockets/baileys": "^6.5.0",
+    "@whiskeysockets/baileys": "^6.6.0",
     "qrcode": "^1.5.3",
-    "pino": "^8.16.1",
-    "@hapi/boom": "^10.0.1",
-    "https": "^1.0.0"
+    "pino": "^8.19.0",
+    "@hapi/boom": "^10.0.1"
   }
 }
